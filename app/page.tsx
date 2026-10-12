@@ -110,7 +110,11 @@ function ActiveSession() {
             <Bot className="w-10 h-10" />
           </div>
           <p className="font-semibold text-slate-200 mb-1">AI Interviewer</p>
-          <p className="text-xs text-slate-400 mb-6">Listening & Evaluating</p>
+          <p className="text-xs text-slate-400 mb-6">
+            {agentAudioTrack
+              ? 'Phase 1 · Introduction — answer when prompted'
+              : 'Connecting interviewer…'}
+          </p>
 
           {/* Live Voice Audio Waveform Visualizer */}
           <div className="w-full max-w-xs h-12">
