@@ -1,7 +1,9 @@
-import { AccessToken } from 'livekit-server-sdk';
+import { AccessToken, RoomAgentDispatch, RoomConfiguration } from 'livekit-server-sdk';
 import { NextRequest, NextResponse } from 'next/server';
 
-export async function GET(request: NextRequest) {
+const AGENT_NAME = 'sequence-interviewer';
+
+export async function GET(_request: NextRequest) {
   try {
     const apiKey = process.env.LIVEKIT_API_KEY;
     const apiSecret = process.env.LIVEKIT_API_SECRET;
@@ -14,36 +16,39 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Generate unique room and candidate identity
     const roomName = `interview-${Math.random().toString(36).substring(2, 9)}`;
     const identity = `candidate-${Math.random().toString(36).substring(2, 7)}`;
 
     const token = new AccessToken(apiKey, apiSecret, {
-      identity: identity,
+      identity,
       ttl: '1h',
     });
 
     token.addGrant({
       room: roomName,
       roomJoin: true,
+      roomCreate: true,
       canPublish: true,
       canSubscribe: true,
+    });
+
+    // Agent dispatch must be on the JWT roomConfig — putting it only in the
+    // JSON body does nothing; LiveKit never sees it and the agent never joins.
+    token.roomConfig = new RoomConfiguration({
+      agents: [
+        new RoomAgentDispatch({
+          agentName: AGENT_NAME,
+        }),
+      ],
     });
 
     const jwt = await token.toJwt();
 
     return NextResponse.json({
       serverUrl: wsUrl,
-      roomName: roomName,
+      roomName,
       participantToken: jwt,
-      roomJoin: true,
-  canPublish: true,
-  canSubscribe: true,
-  // Explicitly dispatch your agent to this room
-  roomCreate: true,
-  agent: {
-    agentName: "sequence-interviewer", // Must match agent.py
-  },
+      agentName: AGENT_NAME,
     });
   } catch (error) {
     console.error('Failed to generate token:', error);
