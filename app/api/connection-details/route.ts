@@ -36,6 +36,14 @@ export async function GET(request: NextRequest) {
       serverUrl: wsUrl,
       roomName: roomName,
       participantToken: jwt,
+      roomJoin: true,
+  canPublish: true,
+  canSubscribe: true,
+  // Explicitly dispatch your agent to this room
+  roomCreate: true,
+  agent: {
+    agentName: "sequence-interviewer", // Must match agent.py
+  },
     });
   } catch (error) {
     console.error('Failed to generate token:', error);
