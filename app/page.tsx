@@ -11,7 +11,7 @@ import {
   TrackReference,
 } from '@livekit/components-react';
 import { Track } from 'livekit-client';
-import '@livekit/components-styles';
+import '@livekit/components-react/styles';
 import { Mic, Video, Bot, User, PhoneOff, Sparkles } from 'lucide-react';
 
 export default function InterviewRoom() {
