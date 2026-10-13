@@ -1,18 +1,20 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   LiveKitRoom,
   RoomAudioRenderer,
   ControlBar,
   BarVisualizer,
   useTracks,
-  MediaDeviceMenu,
+  useLocalParticipant,
   TrackReference,
 } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import '@livekit/components-styles';
-import { Mic, Video, Bot, User, PhoneOff, Sparkles } from 'lucide-react';
+import { Bot, User, Sparkles } from 'lucide-react';
+import { useCheatingDetection } from '@/hooks/useCheatingDetection';
+import type { CheatingEventDetail } from '@/lib/cheating-detection';
 
 export default function InterviewRoom() {
   const [connectionDetails, setConnectionDetails] = useState<{
@@ -85,13 +87,41 @@ export default function InterviewRoom() {
 
 function ActiveSession() {
   const tracks = useTracks([Track.Source.Camera, Track.Source.Microphone]);
+  const { localParticipant } = useLocalParticipant();
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [cameraReady, setCameraReady] = useState(false);
+
   const agentAudioTrack = tracks.find(
     (t) => t.participant.isAgent && t.source === Track.Source.Microphone
   );
 
+  const localCameraPub = localParticipant.getTrackPublication(Track.Source.Camera);
+  const localCameraTrack = localCameraPub?.track;
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el || !localCameraTrack) {
+      setCameraReady(false);
+      return;
+    }
+    localCameraTrack.attach(el);
+    setCameraReady(true);
+    return () => {
+      localCameraTrack.detach(el);
+      setCameraReady(false);
+    };
+  }, [localCameraTrack]);
+
+  useCheatingDetection(videoRef, cameraReady, {
+    fps: 2.5,
+    onCheating: (detail: CheatingEventDetail) => {
+      // Hook already console.logs; keep a session-level sink for future wiring (UI / agent).
+      void detail;
+    },
+  });
+
   return (
     <div className="flex-1 flex flex-col justify-between p-6 max-w-6xl mx-auto w-full">
-      {/* Header */}
       <header className="flex items-center justify-between border-b border-slate-800 pb-4">
         <div className="flex items-center gap-3">
           <span className="relative flex h-3 w-3">
@@ -102,9 +132,7 @@ function ActiveSession() {
         </div>
       </header>
 
-      {/* Main Grid Layout */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 my-auto py-6">
-        {/* AI Agent Tile */}
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col items-center justify-center min-h-[320px] relative overflow-hidden">
           <div className="w-20 h-20 bg-blue-500/10 text-blue-400 rounded-2xl flex items-center justify-center mb-4">
             <Bot className="w-10 h-10" />
@@ -116,7 +144,6 @@ function ActiveSession() {
               : 'Connecting interviewer…'}
           </p>
 
-          {/* Live Voice Audio Waveform Visualizer */}
           <div className="w-full max-w-xs h-12">
             {agentAudioTrack ? (
               <BarVisualizer
@@ -131,16 +158,31 @@ function ActiveSession() {
           </div>
         </div>
 
-        {/* Candidate Video Feed Tile */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 flex flex-col items-center justify-center min-h-[320px] relative overflow-hidden">
-          <div className="w-20 h-20 bg-slate-800 text-slate-400 rounded-2xl flex items-center justify-center mb-4">
-            <User className="w-10 h-10" />
-          </div>
-          <p className="font-semibold text-slate-200">Candidate (You)</p>
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-0 flex flex-col items-center justify-center min-h-[320px] relative overflow-hidden">
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
+          />
+          {!cameraReady && (
+            <div className="relative z-10 flex flex-col items-center">
+              <div className="w-20 h-20 bg-slate-800 text-slate-400 rounded-2xl flex items-center justify-center mb-4">
+                <User className="w-10 h-10" />
+              </div>
+              <p className="font-semibold text-slate-200">Candidate (You)</p>
+              <p className="text-xs text-slate-500 mt-1">Waiting for camera…</p>
+            </div>
+          )}
+          {cameraReady && (
+            <div className="absolute bottom-3 left-3 z-10 px-2 py-1 rounded-md bg-black/50 text-xs text-slate-200">
+              You · proctoring on
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Control Bar */}
       <footer className="flex justify-center pb-4">
         <ControlBar
           controls={{
