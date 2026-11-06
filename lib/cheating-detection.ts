@@ -67,24 +67,34 @@ const GAZE_HORIZONTAL_THRESHOLD = 0.32;
 /** Vertical iris offset — mild downward gaze while reading is allowed. */
 const GAZE_VERTICAL_THRESHOLD = 0.28;
 
-/** Blendshape score above which we treat the eye as blinking / closed (skip gaze). */
-const BLINK_BLENDSHAPE_THRESHOLD = 0.45;
-/** Ear-style openness below this also counts as blink / heavy fatigue — skip gaze. */
+/** Ear-style openness below this counts as blink / heavy fatigue — skip gaze. */
 const EYE_OPENNESS_MIN = 0.12;
 
-const WASM_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm';
+/** Must match the installed `@mediapipe/tasks-vision` version (JS ↔ WASM ABI). */
+const WASM_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.0/wasm';
 const MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
 
-function blendshapeScore(
-  result: FaceLandmarkerResult,
-  faceIndex: number,
-  name: string
-): number {
-  const cats = result.faceBlendshapes?.[faceIndex]?.categories;
-  if (!cats) return 0;
-  const hit = cats.find((c) => c.categoryName === name);
-  return hit?.score ?? 0;
+const MEDIAPIPE_NOISE =
+  /TensorFlow Lite XNNPACK|Created TensorFlow Lite|Face blendshape model|GL version:|Graph successfully|Graph finished|Successfully destroyed WebGL/i;
+
+/** MediaPipe WASM prints INFO lines via console.error; Next.js turns those into overlays. */
+function silenceMediapipeLogs(): () => void {
+  const prevError = console.error;
+  const prevWarn = console.warn;
+  const mute =
+    (orig: typeof console.error) =>
+    (...args: unknown[]) => {
+      const first = args[0];
+      if (typeof first === 'string' && MEDIAPIPE_NOISE.test(first)) return;
+      orig.apply(console, args as Parameters<typeof console.error>);
+    };
+  console.error = mute(prevError) as typeof console.error;
+  console.warn = mute(prevWarn) as typeof console.warn;
+  return () => {
+    console.error = prevError;
+    console.warn = prevWarn;
+  };
 }
 
 function extractEuler(matrix: Matrix): { yaw: number; pitch: number; roll: number } {
@@ -158,6 +168,8 @@ export class CheatingDetector {
   private timer: ReturnType<typeof setInterval> | null = null;
   private video: HTMLVideoElement | null = null;
   private lastTimestamp = -1;
+  private lastVideoTime = -1;
+  private busy = false;
   private disposed = false;
   private readonly options: Required<
     Pick<CheatingDetectorOptions, 'fps' | 'numFaces' | 'emitCooldownMs'>
@@ -191,23 +203,29 @@ export class CheatingDetector {
 
   async init(): Promise<void> {
     if (this.landmarker) return;
-    const vision = await FilesetResolver.forVisionTasks(WASM_CDN);
-    const common = {
-      runningMode: 'VIDEO' as const,
-      numFaces: this.options.numFaces,
-      outputFaceBlendshapes: true,
-      outputFacialTransformationMatrixes: true,
-    };
+    const restore = silenceMediapipeLogs();
     try {
-      this.landmarker = await FaceLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
-        ...common,
-      });
-    } catch {
-      this.landmarker = await FaceLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'CPU' },
-        ...common,
-      });
+      const vision = await FilesetResolver.forVisionTasks(WASM_CDN);
+      // Landmark-only blink via eye openness — skip blendshapes (CPU-only XNNPACK path).
+      const common = {
+        runningMode: 'VIDEO' as const,
+        numFaces: this.options.numFaces,
+        outputFaceBlendshapes: false,
+        outputFacialTransformationMatrixes: true,
+      };
+      try {
+        this.landmarker = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
+          ...common,
+        });
+      } catch {
+        this.landmarker = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: MODEL_URL, delegate: 'CPU' },
+          ...common,
+        });
+      }
+    } finally {
+      restore();
     }
   }
 
@@ -216,7 +234,7 @@ export class CheatingDetector {
     if (this.timer) return;
     const intervalMs = Math.max(200, Math.round(1000 / this.options.fps));
     this.timer = setInterval(() => {
-      void this.tick();
+      this.tick();
     }, intervalMs);
   }
 
@@ -230,7 +248,12 @@ export class CheatingDetector {
   dispose(): void {
     this.disposed = true;
     this.stop();
-    this.landmarker?.close();
+    const restore = silenceMediapipeLogs();
+    try {
+      this.landmarker?.close();
+    } finally {
+      restore();
+    }
     this.landmarker = null;
     this.video = null;
   }
@@ -246,10 +269,16 @@ export class CheatingDetector {
     );
   }
 
-  private async tick() {
-    if (this.disposed || !this.landmarker || !this.video) return;
+  private tick() {
+    if (this.disposed || this.busy || !this.landmarker || !this.video) return;
     const video = this.video;
-    if (video.readyState < 2 || video.videoWidth === 0) return;
+    if (video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) return;
+
+    // Skip duplicate frames when the media clock advances. LiveKit/MediaStream
+    // sources may keep currentTime at 0 — don't stall detection in that case.
+    const mediaTime = video.currentTime;
+    if (mediaTime > 0 && mediaTime === this.lastVideoTime) return;
+    this.lastVideoTime = mediaTime;
 
     let timestamp = performance.now();
     if (timestamp <= this.lastTimestamp) {
@@ -257,14 +286,17 @@ export class CheatingDetector {
     }
     this.lastTimestamp = timestamp;
 
-    let result: FaceLandmarkerResult;
+    this.busy = true;
+    const restore = silenceMediapipeLogs();
     try {
-      result = this.landmarker.detectForVideo(video, timestamp);
+      const result = this.landmarker.detectForVideo(video, timestamp);
+      if (!this.disposed) this.analyze(result);
     } catch {
-      return;
+      // LiveKit attach/detach and brief empty frames can throw; skip the tick.
+    } finally {
+      restore();
+      this.busy = false;
     }
-
-    this.analyze(result);
   }
 
   private analyze(result: FaceLandmarkerResult) {
@@ -324,8 +356,6 @@ export class CheatingDetector {
     }
 
     // --- Gaze (skip during blink / closed eyes / fatigue) ---
-    const blinkL = blendshapeScore(result, 0, 'eyeBlinkLeft');
-    const blinkR = blendshapeScore(result, 0, 'eyeBlinkRight');
     const openL = eyeOpenness(
       landmarks,
       LEFT_EYE_TOP,
@@ -341,11 +371,7 @@ export class CheatingDetector {
       RIGHT_EYE_INNER
     );
 
-    const blinking =
-      blinkL >= BLINK_BLENDSHAPE_THRESHOLD ||
-      blinkR >= BLINK_BLENDSHAPE_THRESHOLD ||
-      openL < EYE_OPENNESS_MIN ||
-      openR < EYE_OPENNESS_MIN;
+    const blinking = openL < EYE_OPENNESS_MIN || openR < EYE_OPENNESS_MIN;
 
     if (blinking) {
       // Natural blink / eye fatigue — do not accumulate gaze-away streak
