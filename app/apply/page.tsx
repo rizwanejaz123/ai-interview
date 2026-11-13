@@ -5,10 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { primaryAction, ReviewPanel, ReviewShell, secondaryAction } from "@/components/review-shell";
-import { stashJoin } from "@/lib/join-cache";
 import {
   parseCreatedSession,
-  parseJoinDetails,
   readApiError,
   skillLabel,
   type CreatedSession,
@@ -24,6 +22,7 @@ export default function ApplyPage() {
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [selecting, setSelecting] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,6 +69,7 @@ export default function ApplyPage() {
     setError(null);
     setSelectedType(interview.id);
     try {
+      // Select track without generating so the Generate button is explicit.
       const response = await fetch(
         `/api/vetting/sessions/${encodeURIComponent(session.session_id)}/select`,
         {
@@ -78,7 +78,7 @@ export default function ApplyPage() {
             Authorization: `Bearer ${session.candidate_token}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ interview_type: interview.id }),
+          body: JSON.stringify({ interview_type: interview.id, generate: false }),
         },
       );
       if (!response.ok) {
@@ -100,46 +100,71 @@ export default function ApplyPage() {
     }
   };
 
-  const start = async () => {
-    if (!session) return;
-    setStarting(true);
+  const generateQuestions = async () => {
+    if (!session || !selectedType) {
+      setError("Select an interview first.");
+      return;
+    }
+    setGenerating(true);
     setError(null);
     try {
-      const response = await fetch(`/api/vetting/sessions/${encodeURIComponent(session.session_id)}/join`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${session.candidate_token}` },
-      });
+      const response = await fetch(
+        `/api/vetting/sessions/${encodeURIComponent(session.session_id)}/questions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${session.candidate_token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ interview_type: selectedType }),
+        },
+      );
       if (!response.ok) {
         setError(await readApiError(response));
         return;
       }
-      const join = parseJoinDetails(await response.json());
-      if (!join) {
-        setError("The server returned an unexpected join response.");
+      const updated = parseCreatedSession(await response.json());
+      if (!updated) {
+        setError("The server returned an unexpected session after generating questions.");
         return;
       }
-      stashJoin(session.session_id, join);
-      const params = new URLSearchParams({
-        session_id: session.session_id,
-        token: session.candidate_token,
-      });
-      router.push(`/interview?${params.toString()}`);
+      setSession(updated);
+      setSelectedType(updated.interview_type);
     } catch (err) {
       console.error(err);
-      setError("Could not start the interview.");
+      setError("Could not generate questions.");
     } finally {
-      setStarting(false);
+      setGenerating(false);
     }
   };
 
-  const canStart = session?.state === "ready" || session?.state === "live";
+  const start = () => {
+    if (!session) return;
+    if (!session.questions.length) {
+      setError("Generate questions before starting the interview.");
+      return;
+    }
+    setStarting(true);
+    setError(null);
+    // Join (and agent dispatch) happens after setup checks on /interview.
+    const params = new URLSearchParams({
+      session_id: session.session_id,
+      token: session.candidate_token,
+    });
+    router.push(`/interview?${params.toString()}`);
+  };
+
+  const hasQuestions = (session?.questions.length ?? 0) > 0;
+  const canStart =
+    hasQuestions && (session?.state === "ready" || session?.state === "live");
   const selected = session?.interview;
+  const busy = uploading || selecting || generating || starting;
 
   return (
     <ReviewShell
       signOut
       title="Upload resume"
-      subtitle="PDF or plain text. After we read your resume, pick which interview to take."
+      subtitle="PDF or plain text. We build an AI profile, personalize questions from your resume, then you start."
     >
       <div className="grid max-w-3xl gap-5">
         <ReviewPanel title="Resume">
@@ -165,12 +190,12 @@ export default function ApplyPage() {
             disabled={uploading || !file}
             className={`${primaryAction} mt-4`}
           >
-            {uploading ? "Reading resume…" : "Upload resume"}
+            {uploading ? "Building AI profile…" : "Upload resume"}
           </button>
         </ReviewPanel>
 
         {session ? (
-          <ReviewPanel title="Extracted profile">
+          <ReviewPanel title="Candidate profile">
             <p className="text-2xl font-semibold tracking-tight">
               {session.profile?.name?.trim() || "Candidate"}
             </p>
@@ -179,11 +204,15 @@ export default function ApplyPage() {
                 session.profile?.industry,
                 session.profile?.field,
                 yearsLabel(session.profile?.years_total),
+                profileSourceLabel(session.profile?.source),
                 session.state,
               ]
                 .filter(Boolean)
                 .join(" · ")}
             </p>
+            {session.profile?.summary ? (
+              <p className="mt-3 text-sm text-[#1c1913]">{session.profile.summary}</p>
+            ) : null}
             {session.profile && session.profile.skills.length > 0 ? (
               <ul className="mt-4 flex flex-wrap gap-2">
                 {session.profile.skills.map((skill) => (
@@ -202,7 +231,7 @@ export default function ApplyPage() {
         {session ? (
           <ReviewPanel title="Choose interview">
             <p className="text-sm text-[#5c574c]">
-              Fixed question sets matched to your resume. Select one to continue.
+              Pick a track, then generate personalized questions from your resume before you start.
             </p>
             {session.interviews.length === 0 ? (
               <p className="mt-4 text-sm text-[#8b1e1e]">
@@ -217,7 +246,7 @@ export default function ApplyPage() {
                       <button
                         type="button"
                         onClick={() => void selectInterview(interview)}
-                        disabled={selecting || starting}
+                        disabled={busy}
                         className={[
                           "w-full border px-4 py-3 text-left transition",
                           active
@@ -226,7 +255,14 @@ export default function ApplyPage() {
                         ].join(" ")}
                       >
                         <div className="flex items-baseline justify-between gap-3">
-                          <p className="text-base font-semibold">{interview.title}</p>
+                          <p className="text-base font-semibold">
+                            {interview.title}
+                            {interview.recommended ? (
+                              <span className={`ml-2 text-xs font-normal uppercase tracking-wide ${active ? "text-[#d7d0c0]" : "text-[#5c574c]"}`}>
+                                Recommended
+                              </span>
+                            ) : null}
+                          </p>
                           <p className={`shrink-0 text-xs ${active ? "text-[#d7d0c0]" : "text-[#5c574c]"}`}>
                             ~{interview.duration_minutes} min · {interview.question_count} questions
                           </p>
@@ -244,28 +280,66 @@ export default function ApplyPage() {
               </ul>
             )}
 
-            {selected ? (
+            {selectedType ? (
               <div className="mt-5 border-t border-[#d7d0c0] pt-4">
                 <p className="text-sm">
-                  Selected: <span className="font-semibold">{selected.title}</span>
+                  Selected:{" "}
+                  <span className="font-semibold">{selected?.title || selectedType}</span>
                 </p>
-                <button
-                  type="button"
-                  onClick={() => void start()}
-                  disabled={!canStart || starting || selecting}
-                  className={`${primaryAction} mt-4`}
-                >
-                  {starting ? "Starting interview…" : `Start ${selected.title}`}
-                </button>
-                {!canStart ? (
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void generateQuestions()}
+                    disabled={busy}
+                    className={primaryAction}
+                  >
+                    {generating
+                      ? "Generating questions…"
+                      : hasQuestions
+                        ? "Regenerate questions"
+                        : "Generate questions"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void start()}
+                    disabled={!canStart || busy}
+                    className={secondaryAction}
+                  >
+                    {starting ? "Starting interview…" : "Start interview"}
+                  </button>
+                </div>
+                {!hasQuestions ? (
                   <p className="mt-2 text-sm text-[#5c574c]">
-                    This session is {session.state} and cannot be joined yet.
+                    Generate questions to preview what the interviewer will ask, then start.
                   </p>
                 ) : null}
               </div>
             ) : (
               <p className="mt-4 text-sm text-[#5c574c]">Select an interview above to continue.</p>
             )}
+          </ReviewPanel>
+        ) : null}
+
+        {session && hasQuestions ? (
+          <ReviewPanel title="Generated questions">
+            <p className="text-sm text-[#5c574c]">
+              Personalized from your resume (depth + skips). Live follow-ups may still happen during
+              the call when an answer is thin.
+            </p>
+            <ol className="mt-4 grid gap-3">
+              {session.questions.map((question, index) => (
+                <li key={question.id} className="border border-[#d7d0c0] px-4 py-3">
+                  <p className="text-xs uppercase tracking-wide text-[#5c574c]">
+                    {index + 1}. {question.topic}
+                    {question.source ? ` · ${question.source}` : ""}
+                    {question.depth ? ` · ${question.depth}` : ""}
+                  </p>
+                  <p className="mt-2 text-sm text-[#1c1913]">
+                    {question.prompt?.trim() || "(prompt unavailable)"}
+                  </p>
+                </li>
+              ))}
+            </ol>
           </ReviewPanel>
         ) : null}
 
@@ -297,6 +371,13 @@ function isResumeFile(file: File): boolean {
 function yearsLabel(years: number | null | undefined): string | null {
   if (typeof years !== "number") return null;
   return `${years} ${years === 1 ? "year" : "years"}`;
+}
+
+function profileSourceLabel(source: string | null | undefined): string | null {
+  if (source === "llm") return "AI profile";
+  if (source === "llm_fallback") return "basic profile (AI unavailable)";
+  if (source === "heuristic") return "basic profile";
+  return null;
 }
 
 function categoryLabel(category: string): string {

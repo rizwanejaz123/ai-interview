@@ -14,6 +14,7 @@ import {
   type IntegrityFlag,
   type QuestionDetail,
   type ScorecardRow,
+  type SkillEval,
 } from "@/lib/vetting";
 
 export function AdminReportView() {
@@ -83,7 +84,8 @@ export function AdminReportView() {
   const name = report.profile?.name?.trim() || "Unknown candidate";
   const field = report.profile?.field;
   const rows = mergedRows(report);
-  const mean = meanScore(rows);
+  const headline =
+    report.skill_eval?.weighted_overall ?? meanScore(rows);
   const subtitle = [sessionId, report.state, report.room_name].filter(Boolean).join(" · ");
 
   return (
@@ -91,14 +93,17 @@ export function AdminReportView() {
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1.1fr_0.9fr]">
         <ReviewPanel title="Scorecard">
           <p className="text-[42px] font-semibold leading-none tracking-tight">
-            {mean == null ? "—" : mean}
-            {mean != null ? <span className="text-lg font-medium text-[#5c574c]"> / 5</span> : null}
+            {headline == null ? "—" : headline}
+            {headline != null ? (
+              <span className="text-lg font-medium text-[#5c574c]"> / 5 weighted</span>
+            ) : null}
           </p>
           {report.profile && report.profile.skills.length > 0 ? (
             <p className="mt-3 text-sm text-[#5c574c]">
               {report.profile.skills.map((skill) => skillLabel(skill)).join(", ")}
             </p>
           ) : null}
+          <SkillEvalBlock skillEval={report.skill_eval} />
           {rows.length === 0 ? (
             <p className="mt-4 text-sm text-[#5c574c]">No questions or scores yet.</p>
           ) : (
@@ -119,6 +124,12 @@ export function AdminReportView() {
                         {[row.id, row.source].filter(Boolean).join(" · ")}
                       </div>
                       {row.prompt ? <div className="mt-1 text-[#1c1a16]">{row.prompt}</div> : null}
+                      {row.dimensions ? (
+                        <div className="mt-1 text-xs text-[#5c574c]">
+                          D {row.dimensions.depth} · R {row.dimensions.reasoning} · C{" "}
+                          {row.dimensions.communication} · J {row.dimensions.judgment}
+                        </div>
+                      ) : null}
                     </td>
                     <td className="border-b border-[#d7d0c0] px-1.5 py-2 align-top">
                       {row.score == null ? "—" : row.score}
@@ -187,6 +198,26 @@ export function AdminReportView() {
             </div>
           )}
         </ReviewPanel>
+
+        {report.coding_snapshots.length > 0 ? (
+          <ReviewPanel title="Coding snapshots" className="lg:col-span-2">
+            <div className="grid gap-4">
+              {report.coding_snapshots.map((snap) => (
+                <div key={snap.question_id}>
+                  <div className="text-xs uppercase tracking-wide text-[#5c574c]">
+                    {snap.question_id}
+                    {snap.language ? ` · ${snap.language}` : ""}
+                    {snap.final ? " · final" : ""}
+                    {snap.occurred_at ? ` · ${formatWhen(snap.occurred_at)}` : ""}
+                  </div>
+                  <pre className="mt-2 overflow-x-auto whitespace-pre-wrap border border-[#d7d0c0] bg-[#fffdf8] p-3 font-mono text-xs">
+                    {snap.code || "(empty)"}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          </ReviewPanel>
+        ) : null}
       </div>
       <div className="mt-5">
         <BackLink />
@@ -211,7 +242,37 @@ type MergedRow = {
   source?: string;
   score: number | null;
   feedback: string | null;
+  dimensions: ScorecardRow["dimensions"];
 };
+
+function SkillEvalBlock({ skillEval }: { skillEval: SkillEval | null }) {
+  if (!skillEval || skillEval.dimensions.length === 0) return null;
+  const scored = skillEval.dimensions.some((dim) => dim.score != null);
+  if (!scored) return null;
+  return (
+    <ul className="mt-4 grid gap-2">
+      {skillEval.dimensions.map((dim) => {
+        const pct = dim.score == null ? 0 : (dim.score / 5) * 100;
+        return (
+          <li key={dim.id}>
+            <div className="flex items-baseline justify-between gap-3 text-sm">
+              <span>
+                {dim.label}
+                <span className="text-[#5c574c]"> · {Math.round(dim.weight * 100)}%</span>
+              </span>
+              <span className="font-medium tabular-nums">
+                {dim.score == null ? "—" : dim.score}
+              </span>
+            </div>
+            <div className="mt-1 h-1.5 overflow-hidden bg-[#efe8d8]">
+              <div className="h-full bg-[#1c1a16]" style={{ width: `${pct}%` }} />
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 function mergedRows(report: AdminReport): MergedRow[] {
   const scored = new Map<string, ScorecardRow>();
@@ -231,6 +292,7 @@ function mergedRows(report: AdminReport): MergedRow[] {
       topic: row.topic || "Question",
       score: row.score,
       feedback: row.feedback,
+      dimensions: row.dimensions,
     });
   });
   return rows;
@@ -245,6 +307,7 @@ function fromQuestion(question: QuestionDetail, score: ScorecardRow | undefined)
     source: question.source,
     score: score?.score ?? null,
     feedback: score?.feedback ?? null,
+    dimensions: score?.dimensions ?? null,
   };
 }
 

@@ -17,3 +17,8 @@ export function readJoin(sessionId: string): JoinDetails | null {
     return null;
   }
 }
+
+/** Drop cached join so the next attempt remints a token + re-dispatches the agent. */
+export function clearJoin(sessionId: string): void {
+  sessionStorage.removeItem(key(sessionId));
+}

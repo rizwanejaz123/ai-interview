@@ -28,12 +28,22 @@ export function bearerHeader(request: Request): string | null {
 
 export async function proxyTo(path: string, init: RequestInit): Promise<NextResponse> {
   await connection();
+  const url = vettingUrl(path);
   try {
-    const upstream = await fetch(vettingUrl(path), { ...init, cache: "no-store" });
+    const upstream = await fetch(url, { ...init, cache: "no-store" });
     return relay(upstream);
   } catch (error) {
-    console.error("vetting proxy failed", path, error);
-    return NextResponse.json({ error: "Vetting API unreachable" }, { status: 502 });
+    console.error("vetting proxy failed", path, url, error);
+    const local =
+      url.includes("127.0.0.1") || url.includes("localhost");
+    return NextResponse.json(
+      {
+        error: local
+          ? "Vetting API unreachable — set VETTING_API_URL on this host (e.g. https://dev.netpace.ai/ventiq/vetting)"
+          : "Vetting API unreachable",
+      },
+      { status: 502 },
+    );
   }
 }
 

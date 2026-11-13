@@ -11,6 +11,8 @@ export type SkillProfile = {
   industry?: string | null;
   years_total?: number | null;
   skills: SkillEvidence[];
+  source?: "heuristic" | "llm" | "llm_fallback" | string | null;
+  summary?: string | null;
 };
 
 export type QuestionTopic = {
@@ -18,6 +20,12 @@ export type QuestionTopic = {
   topic: string;
   prompt?: string;
   source?: string;
+  depth?: string;
+  skill?: string;
+  modality?: "spoken" | "live_coding" | string;
+  language?: string;
+  starter_code?: string;
+  problem_md?: string;
 };
 
 export type InterviewOption = {
@@ -27,6 +35,7 @@ export type InterviewOption = {
   description: string;
   duration_minutes: number;
   question_count: number;
+  recommended?: boolean;
 };
 
 export type SelectedInterview = {
@@ -74,11 +83,35 @@ export type QuestionDetail = {
   source?: string;
 };
 
+export type DimensionScores = {
+  depth: number;
+  reasoning: number;
+  communication: number;
+  judgment: number;
+};
+
 export type ScorecardRow = {
   question_id: string | null;
   topic: string | null;
   score: number | null;
   feedback: string | null;
+  dimensions: DimensionScores | null;
+};
+
+export type SkillDimension = {
+  id: string;
+  label: string;
+  weight: number;
+  description: string;
+  score: number | null;
+  samples: number;
+};
+
+export type SkillEval = {
+  interview_type: string;
+  dimensions: SkillDimension[];
+  weighted_overall: number | null;
+  sample_count: number;
 };
 
 export type IntegrityFlag = {
@@ -99,6 +132,14 @@ export type TranscriptTurn = {
   occurred_at: string | null;
 };
 
+export type CodingSnapshot = {
+  question_id: string;
+  code: string;
+  final: boolean;
+  language?: string | null;
+  occurred_at?: string | null;
+};
+
 export type AdminReport = {
   session_id: string;
   state: string;
@@ -106,9 +147,11 @@ export type AdminReport = {
   profile: SkillProfile | null;
   questions: QuestionDetail[];
   scorecard: ScorecardRow[];
+  skill_eval: SkillEval | null;
   notes: string[];
   integrity: IntegrityFlag[];
   transcript: TranscriptTurn[];
+  coding_snapshots: CodingSnapshot[];
 };
 
 export function skillLabel(skill: SkillEvidence): string {
@@ -217,6 +260,7 @@ export function parseAdminReport(value: unknown): AdminReport | null {
           return row ? [row] : [];
         })
       : [],
+    skill_eval: asSkillEval(value.skill_eval),
     notes: Array.isArray(value.notes)
       ? value.notes.filter((note): note is string => typeof note === "string" && note.length > 0)
       : [],
@@ -230,6 +274,20 @@ export function parseAdminReport(value: unknown): AdminReport | null {
       ? value.transcript.flatMap((item) => {
           const turn = asTurn(item);
           return turn ? [turn] : [];
+        })
+      : [],
+    coding_snapshots: Array.isArray(value.coding_snapshots)
+      ? value.coding_snapshots.flatMap((item) => {
+          if (!isRecord(item) || typeof item.question_id !== "string") return [];
+          return [
+            {
+              question_id: item.question_id,
+              code: typeof item.code === "string" ? item.code : "",
+              final: item.final === true,
+              language: typeof item.language === "string" ? item.language : null,
+              occurred_at: typeof item.occurred_at === "string" ? item.occurred_at : null,
+            },
+          ];
         })
       : [],
   };
@@ -246,6 +304,7 @@ function asInterviewOption(value: unknown): InterviewOption | null {
     description: typeof value.description === "string" ? value.description : "",
     duration_minutes: typeof value.duration_minutes === "number" ? value.duration_minutes : 20,
     question_count: typeof value.question_count === "number" ? value.question_count : 0,
+    recommended: value.recommended === true,
   };
 }
 
@@ -270,6 +329,12 @@ function asQuestionTopic(value: unknown): QuestionTopic | null {
     topic: typeof value.topic === "string" ? value.topic : "Question",
     prompt: typeof value.prompt === "string" ? value.prompt : undefined,
     source: typeof value.source === "string" ? value.source : undefined,
+    depth: typeof value.depth === "string" ? value.depth : undefined,
+    skill: typeof value.skill === "string" ? value.skill : undefined,
+    modality: typeof value.modality === "string" ? value.modality : undefined,
+    language: typeof value.language === "string" ? value.language : undefined,
+    starter_code: typeof value.starter_code === "string" ? value.starter_code : undefined,
+    problem_md: typeof value.problem_md === "string" ? value.problem_md : undefined,
   };
 }
 
@@ -291,6 +356,50 @@ function asScorecardRow(value: unknown): ScorecardRow | null {
     topic: typeof value.topic === "string" ? value.topic : null,
     score: typeof value.score === "number" ? value.score : null,
     feedback: typeof value.feedback === "string" ? value.feedback : null,
+    dimensions: asDimensionScores(value.dimensions),
+  };
+}
+
+function asDimensionScores(value: unknown): DimensionScores | null {
+  if (!isRecord(value)) return null;
+  const depth = value.depth;
+  const reasoning = value.reasoning;
+  const communication = value.communication;
+  const judgment = value.judgment;
+  if (
+    typeof depth !== "number" ||
+    typeof reasoning !== "number" ||
+    typeof communication !== "number" ||
+    typeof judgment !== "number"
+  ) {
+    return null;
+  }
+  return { depth, reasoning, communication, judgment };
+}
+
+function asSkillEval(value: unknown): SkillEval | null {
+  if (!isRecord(value) || !Array.isArray(value.dimensions)) return null;
+  const dimensions = value.dimensions.flatMap((item) => {
+    if (!isRecord(item) || typeof item.id !== "string" || typeof item.label !== "string") {
+      return [];
+    }
+    return [
+      {
+        id: item.id,
+        label: item.label,
+        weight: typeof item.weight === "number" ? item.weight : 0,
+        description: typeof item.description === "string" ? item.description : "",
+        score: typeof item.score === "number" ? item.score : null,
+        samples: typeof item.samples === "number" ? item.samples : 0,
+      },
+    ];
+  });
+  return {
+    interview_type: typeof value.interview_type === "string" ? value.interview_type : "",
+    dimensions,
+    weighted_overall:
+      typeof value.weighted_overall === "number" ? value.weighted_overall : null,
+    sample_count: typeof value.sample_count === "number" ? value.sample_count : 0,
   };
 }
 
@@ -331,6 +440,8 @@ function asProfile(value: unknown): SkillProfile | null {
     industry: typeof value.industry === "string" ? value.industry : null,
     years_total: typeof value.years_total === "number" ? value.years_total : null,
     skills: asSkills(value.skills),
+    source: typeof value.source === "string" ? value.source : null,
+    summary: typeof value.summary === "string" ? value.summary : null,
   };
 }
 
