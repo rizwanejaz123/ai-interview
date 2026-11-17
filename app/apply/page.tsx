@@ -100,10 +100,10 @@ export default function ApplyPage() {
     }
   };
 
-  const generateQuestions = async () => {
+  const generateQuestions = async (): Promise<CreatedSession | null> => {
     if (!session || !selectedType) {
       setError("Select an interview first.");
-      return;
+      return null;
     }
     setGenerating(true);
     setError(null);
@@ -121,42 +121,64 @@ export default function ApplyPage() {
       );
       if (!response.ok) {
         setError(await readApiError(response));
-        return;
+        return null;
       }
       const updated = parseCreatedSession(await response.json());
       if (!updated) {
         setError("The server returned an unexpected session after generating questions.");
-        return;
+        return null;
       }
       setSession(updated);
       setSelectedType(updated.interview_type);
+      return updated;
     } catch (err) {
       console.error(err);
       setError("Could not generate questions.");
+      return null;
     } finally {
       setGenerating(false);
     }
   };
 
-  const start = () => {
-    if (!session) return;
-    if (!session.questions.length) {
-      setError("Generate questions before starting the interview.");
-      return;
-    }
-    setStarting(true);
-    setError(null);
+  const goToInterview = (active: CreatedSession) => {
     // Join (and agent dispatch) happens after setup checks on /interview.
     const params = new URLSearchParams({
-      session_id: session.session_id,
-      token: session.candidate_token,
+      session_id: active.session_id,
+      token: active.candidate_token,
     });
     router.push(`/interview?${params.toString()}`);
   };
 
+  const start = async () => {
+    if (!session || !selectedType) {
+      setError("Select an interview first.");
+      return;
+    }
+
+    setStarting(true);
+    setError(null);
+    try {
+      let active = session;
+      if (!active.questions.length) {
+        const generated = await generateQuestions();
+        if (!generated) return;
+        active = generated;
+      }
+
+      const ready = active.state === "ready" || active.state === "live";
+      if (!active.questions.length || !ready) {
+        setError("Questions are not ready yet. Try generating again.");
+        return;
+      }
+
+      goToInterview(active);
+    } finally {
+      setStarting(false);
+    }
+  };
+
   const hasQuestions = (session?.questions.length ?? 0) > 0;
-  const canStart =
-    hasQuestions && (session?.state === "ready" || session?.state === "live");
+  const canStart = Boolean(session && selectedType);
   const selected = session?.interview;
   const busy = uploading || selecting || generating || starting;
 
@@ -231,7 +253,7 @@ export default function ApplyPage() {
         {session ? (
           <ReviewPanel title="Choose interview">
             <p className="text-sm text-[#5c574c]">
-              Pick a track, then generate personalized questions from your resume before you start.
+              Pick a track, then start — or generate questions first if you want to preview them.
             </p>
             {session.interviews.length === 0 ? (
               <p className="mt-4 text-sm text-[#8b1e1e]">
@@ -305,12 +327,16 @@ export default function ApplyPage() {
                     disabled={!canStart || busy}
                     className={secondaryAction}
                   >
-                    {starting ? "Starting interview…" : "Start interview"}
+                    {starting
+                      ? hasQuestions
+                        ? "Starting interview…"
+                        : "Generating questions…"
+                      : "Start interview"}
                   </button>
                 </div>
                 {!hasQuestions ? (
                   <p className="mt-2 text-sm text-[#5c574c]">
-                    Generate questions to preview what the interviewer will ask, then start.
+                    Start will generate personalized questions, or preview them first with Generate.
                   </p>
                 ) : null}
               </div>
