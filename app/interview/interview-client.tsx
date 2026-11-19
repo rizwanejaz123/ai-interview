@@ -202,12 +202,16 @@ function ActiveSession({
   const [cameraReady, setCameraReady] = useState(false);
   const [shareWarning, setShareWarning] = useState<string | null>(null);
   const [agentWaitHint, setAgentWaitHint] = useState<string | null>(null);
+  const [agentHasSpoken, setAgentHasSpoken] = useState(false);
+  const [agentSilentTooLong, setAgentSilentTooLong] = useState(false);
+  const agentHasSpokenRef = useRef(false);
   const hadScreenShare = useRef(false);
   const { codingQuestion } = useActiveQuestion(sessionId, candidateToken);
 
   const agentAudioTrack = tracks.find(
     (track) => track.participant.isAgent && track.source === Track.Source.Microphone,
   );
+  const agentJoined = Boolean(agentAudioTrack);
 
   const localCameraPub = localParticipant.getTrackPublication(Track.Source.Camera);
   const localCameraTrack = localCameraPub?.track;
@@ -241,17 +245,64 @@ function ActiveSession({
   useIntegrityReporter(videoRef, cameraReady, sessionId, candidateToken);
 
   useEffect(() => {
-    if (agentAudioTrack) {
-      setAgentWaitHint(null);
-      return;
+    if (!agentJoined) {
+      setAgentHasSpoken(false);
+      setAgentSilentTooLong(false);
+      const timer = window.setTimeout(() => {
+        setAgentWaitHint(
+          "Interviewer still connecting. If you just changed networks, leave and Rejoin so a fresh agent is dispatched. Also close other interview tabs — the free plan allows only a few concurrent speech connections.",
+        );
+      }, 12_000);
+      return () => window.clearTimeout(timer);
     }
-    const timer = window.setTimeout(() => {
+
+    setAgentWaitHint(null);
+    const participant = agentAudioTrack?.participant;
+    if (!participant) return;
+
+    agentHasSpokenRef.current = false;
+    setAgentHasSpoken(false);
+    setAgentSilentTooLong(false);
+
+    const markSpoken = () => {
+      if (!participant.isSpeaking) return;
+      agentHasSpokenRef.current = true;
+      setAgentHasSpoken(true);
+    };
+    markSpoken();
+    const onSpeakers = () => markSpoken();
+    room.on(RoomEvent.ActiveSpeakersChanged, onSpeakers);
+
+    // Track published != able to speak. On Build plan, STT/TTS 429s leave a
+    // silent agent that still shows as joined.
+    const silentTimer = window.setTimeout(() => {
+      if (!agentHasSpokenRef.current) setAgentSilentTooLong(true);
+    }, 10_000);
+
+    return () => {
+      room.off(RoomEvent.ActiveSpeakersChanged, onSpeakers);
+      window.clearTimeout(silentTimer);
+    };
+  }, [agentJoined, agentAudioTrack, room]);
+
+  useEffect(() => {
+    if (agentHasSpoken) {
+      setAgentSilentTooLong(false);
+      setAgentWaitHint(null);
+    } else if (agentSilentTooLong) {
       setAgentWaitHint(
-        "Interviewer still connecting. If you just changed networks, leave and Rejoin so a fresh agent is dispatched. Also close other interview tabs — the free plan allows only a few concurrent speech connections.",
+        "Interviewer joined but is silent — speech services are rate-limited (free plan). Close other interview tabs, wait ~30 seconds, then Leave and Rejoin.",
       );
-    }, 12_000);
-    return () => window.clearTimeout(timer);
-  }, [agentAudioTrack]);
+    }
+  }, [agentHasSpoken, agentSilentTooLong]);
+
+  const agentStatusLabel = !agentJoined
+    ? "Connecting interviewer…"
+    : agentHasSpoken
+      ? "Live — answer when prompted"
+      : agentSilentTooLong
+        ? "Joined but silent — rejoin in ~30s"
+        : "Joined — starting greeting…";
 
   useEffect(() => {
     if (screenShareOn) {
@@ -338,9 +389,7 @@ function ActiveSession({
             <Bot className="h-10 w-10" />
           </div>
           <p className="mb-1 font-semibold text-slate-200">AI Interviewer</p>
-          <p className="mb-6 text-xs text-slate-400">
-            {agentAudioTrack ? "Live — answer when prompted" : "Connecting interviewer…"}
-          </p>
+          <p className="mb-6 text-xs text-slate-400">{agentStatusLabel}</p>
 
           <div className="h-12 w-full max-w-xs">
             {agentAudioTrack ? (
