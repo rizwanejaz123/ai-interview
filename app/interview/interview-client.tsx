@@ -277,7 +277,7 @@ function ActiveSession({
     // silent agent that still shows as joined.
     const silentTimer = window.setTimeout(() => {
       if (!agentHasSpokenRef.current) setAgentSilentTooLong(true);
-    }, 10_000);
+    }, 5_000);
 
     return () => {
       room.off(RoomEvent.ActiveSpeakersChanged, onSpeakers);
