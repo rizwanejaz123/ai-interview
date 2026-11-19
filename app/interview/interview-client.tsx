@@ -273,11 +273,11 @@ function ActiveSession({
     const onSpeakers = () => markSpoken();
     room.on(RoomEvent.ActiveSpeakersChanged, onSpeakers);
 
-    // Track published != able to speak. On Build plan, STT/TTS 429s leave a
-    // silent agent that still shows as joined.
+    // Track published != able to speak. Give the greeting time to finish
+    // (~4–6s) before treating silence as a rate-limit / rejoin hint.
     const silentTimer = window.setTimeout(() => {
       if (!agentHasSpokenRef.current) setAgentSilentTooLong(true);
-    }, 5_000);
+    }, 15_000);
 
     return () => {
       room.off(RoomEvent.ActiveSpeakersChanged, onSpeakers);
