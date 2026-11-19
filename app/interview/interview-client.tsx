@@ -118,8 +118,16 @@ function InterviewConnection({
   if (phase === "left") {
     return (
       <StatusCard
-        title="Interview ended"
-        body="You left the room. Scores and integrity notes are on the admin review page."
+        title="Disconnected"
+        body="Your connection dropped or you left the room. Rejoin to re-dispatch the interviewer (needed after a network change). Scores stay on the admin review page."
+        secondaryAction={{
+          label: "Rejoin interview",
+          onClick: () => {
+            setError(null);
+            setConnection(null);
+            setPhase("joining");
+          },
+        }}
       />
     );
   }
@@ -156,7 +164,8 @@ function InterviewConnection({
       audio={{
         echoCancellation: true,
         noiseSuppression: true,
-        autoGainControl: false,
+        // AGC helps after network/mic device switches so STT hears a usable level.
+        autoGainControl: true,
       }}
       video={true}
       // Re-prompt screen share for the live room after the setup probe.
@@ -192,6 +201,7 @@ function ActiveSession({
   const videoRef = useRef<HTMLVideoElement>(null);
   const [cameraReady, setCameraReady] = useState(false);
   const [shareWarning, setShareWarning] = useState<string | null>(null);
+  const [agentWaitHint, setAgentWaitHint] = useState<string | null>(null);
   const hadScreenShare = useRef(false);
   const { codingQuestion } = useActiveQuestion(sessionId, candidateToken);
 
@@ -229,6 +239,19 @@ function ActiveSession({
   }, [localCameraTrack]);
 
   useIntegrityReporter(videoRef, cameraReady, sessionId, candidateToken);
+
+  useEffect(() => {
+    if (agentAudioTrack) {
+      setAgentWaitHint(null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setAgentWaitHint(
+        "Interviewer still connecting. If you just changed networks, leave and Rejoin so a fresh agent is dispatched. Also close other interview tabs — the free plan allows only a few concurrent speech connections.",
+      );
+    }, 12_000);
+    return () => window.clearTimeout(timer);
+  }, [agentAudioTrack]);
 
   useEffect(() => {
     if (screenShareOn) {
@@ -297,6 +320,11 @@ function ActiveSession({
       {shareWarning && (
         <div className="mt-4 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
           {shareWarning}
+        </div>
+      )}
+      {agentWaitHint && (
+        <div className="mt-4 rounded-xl border border-sky-500/40 bg-sky-500/10 px-4 py-3 text-sm text-sky-100">
+          {agentWaitHint}
         </div>
       )}
 
@@ -381,18 +409,41 @@ function ActiveSession({
   );
 }
 
-function StatusCard({ title, body }: { title: string; body: string }) {
+function StatusCard({
+  title,
+  body,
+  secondaryAction,
+}: {
+  title: string;
+  body: string;
+  secondaryAction?: { label: string; onClick: () => void };
+}) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-slate-950 p-6 text-white">
       <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-8 text-center shadow-xl">
         <h1 className="mb-2 text-2xl font-semibold">{title}</h1>
         <p className="mb-8 text-sm text-slate-400">{body}</p>
-        <Link
-          href="/apply"
-          className="inline-flex w-full items-center justify-center rounded-xl bg-blue-600 px-6 py-3.5 font-medium text-white hover:bg-blue-500"
-        >
-          Upload resume & interview
-        </Link>
+        <div className="flex flex-col gap-3">
+          {secondaryAction ? (
+            <button
+              type="button"
+              onClick={secondaryAction.onClick}
+              className="inline-flex w-full items-center justify-center rounded-xl bg-blue-600 px-6 py-3.5 font-medium text-white hover:bg-blue-500"
+            >
+              {secondaryAction.label}
+            </button>
+          ) : null}
+          <Link
+            href="/apply"
+            className={`inline-flex w-full items-center justify-center rounded-xl px-6 py-3.5 font-medium ${
+              secondaryAction
+                ? "border border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
+                : "bg-blue-600 text-white hover:bg-blue-500"
+            }`}
+          >
+            Upload resume & interview
+          </Link>
+        </div>
       </div>
     </div>
   );

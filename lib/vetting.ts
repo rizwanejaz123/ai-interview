@@ -152,6 +152,9 @@ export type AdminReport = {
   integrity: IntegrityFlag[];
   transcript: TranscriptTurn[];
   coding_snapshots: CodingSnapshot[];
+  /** From agent bank_hydrated — curated_fallback means vetting BE/prefetch missed. */
+  bank_source?: string | null;
+  bank_id?: string | null;
 };
 
 export function skillLabel(skill: SkillEvidence): string {
@@ -290,6 +293,8 @@ export function parseAdminReport(value: unknown): AdminReport | null {
           ];
         })
       : [],
+    bank_source: typeof value.bank_source === "string" ? value.bank_source : null,
+    bank_id: typeof value.bank_id === "string" ? value.bank_id : null,
   };
 }
 

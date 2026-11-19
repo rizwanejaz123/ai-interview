@@ -87,11 +87,22 @@ export function AdminReportView() {
   const headline =
     report.skill_eval?.weighted_overall ?? meanScore(rows);
   const subtitle = [sessionId, report.state, report.room_name].filter(Boolean).join(" · ");
+  const curatedFallback = report.bank_source === "curated_fallback";
 
   return (
     <ReviewShell signOut title={field ? `${name} · ${field}` : name} subtitle={subtitle}>
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1.1fr_0.9fr]">
         <ReviewPanel title="Scorecard">
+          {curatedFallback ? (
+            <p
+              role="status"
+              className="mb-3 rounded border border-[#c9a227] bg-[#fff8e1] px-3 py-2 text-sm text-[#5c4a00]"
+            >
+              Question bank used curated fallback
+              {report.bank_id ? ` (${report.bank_id})` : ""}. Prepared bank was unavailable —
+              treat scores with caution.
+            </p>
+          ) : null}
           <p className="text-[42px] font-semibold leading-none tracking-tight">
             {headline == null ? "—" : headline}
             {headline != null ? (
